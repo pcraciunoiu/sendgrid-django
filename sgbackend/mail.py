@@ -24,10 +24,11 @@ from sendgrid.helpers.mail import (
     Attachment,
     Category,
     Content,
+    CustomArg,
     Email,
     Mail,
     Personalization,
-    Substitution
+    Substitution,
 )
 
 
@@ -38,7 +39,10 @@ class SendGridBackend(BaseEmailBackend):
     def __init__(self, fail_silently=False, **kwargs):
         super(SendGridBackend, self).__init__(
             fail_silently=fail_silently, **kwargs)
-        self.api_key = getattr(settings, "SENDGRID_API_KEY", None)
+        if 'api_key' in kwargs:
+            self.api_key = kwargs['api_key']
+        else:
+            self.api_key = getattr(settings, "SENDGRID_API_KEY", None)
 
         if not self.api_key:
             raise ImproperlyConfigured('''
@@ -68,21 +72,17 @@ class SendGridBackend(BaseEmailBackend):
 
     def _build_sg_mail(self, email):
         mail = Mail()
-        from_name, from_email = rfc822.parseaddr(email.from_email)
-        # Python sendgrid client should improve
-        # sendgrid/helpers/mail/mail.py:164
-        if not from_name:
-            from_name = None
-        mail.set_from(Email(from_email, from_name))
+
+        mail.set_from(self._process_email_addr(email.from_email))
         mail.set_subject(email.subject)
 
         personalization = Personalization()
         for e in email.to:
-            personalization.add_to(Email(e))
+            personalization.add_to(self._process_email_addr(e))
         for e in email.cc:
-            personalization.add_cc(Email(e))
+            personalization.add_cc(self._process_email_addr(e))
         for e in email.bcc:
-            personalization.add_bcc(Email(e))
+            personalization.add_bcc(self._process_email_addr(e))
         personalization.set_subject(email.subject)
         mail.add_content(Content("text/plain", email.body))
         if isinstance(email, EmailMultiAlternatives):
@@ -98,14 +98,38 @@ class SendGridBackend(BaseEmailBackend):
             for c in email.categories:
                 mail.add_category(Category(c))
 
+        if hasattr(email, 'custom_args'):
+            for k, v in email.custom_args.items():
+                mail.add_custom_arg(CustomArg(k, v))
+
         if hasattr(email, 'template_id'):
             mail.set_template_id(email.template_id)
             if hasattr(email, 'substitutions'):
-                for k, v in email.substitutions.items():
-                    personalization.add_substitution(Substitution(k, v))
+                for key, value in email.substitutions.items():
+                    personalization.add_substitution(Substitution(key, value))
 
-        for k, v in email.extra_headers.items():
-            mail.add_header({k: v})
+        # SendGrid does not support adding Reply-To as an extra
+        # header, so it needs to be manually removed if it exists.
+        reply_to_string = ""
+        for key, value in email.extra_headers.items():
+            if key.lower() == "reply-to":
+                reply_to_string = value
+            else:
+                mail.add_header({key: value})
+        # Note that if you set a "Reply-To" header *and* the reply_to
+        # attribute, the header's value will be used.
+        if not mail.reply_to and hasattr(email, "reply_to") and email.reply_to:
+            # SendGrid only supports setting Reply-To to a single address.
+            # See https://github.com/sendgrid/sendgrid-csharp/issues/339.
+            reply_to_string = email.reply_to[0]
+        # Determine whether reply_to contains a name and email address, or
+        # just an email address.
+        if reply_to_string:
+            reply_to_name, reply_to_email = rfc822.parseaddr(reply_to_string)
+            if reply_to_name and reply_to_email:
+                mail.set_reply_to(Email(reply_to_email, reply_to_name))
+            elif reply_to_email:
+                mail.set_reply_to(Email(reply_to_email))
 
         for attachment in email.attachments:
             if isinstance(attachment, MIMEBase):
@@ -126,3 +150,13 @@ class SendGridBackend(BaseEmailBackend):
 
         mail.add_personalization(personalization)
         return mail.get()
+
+    def _process_email_addr(self, email_addr):
+        from_name, from_email = rfc822.parseaddr(email_addr)
+
+        # Python sendgrid client should improve
+        # sendgrid/helpers/mail/mail.py:164
+        if not from_name:
+            from_name = None
+
+        return Email(from_email, from_name)
