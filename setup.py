@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 __version__ = None
 with open('sgbackend/version.py') as f:
@@ -15,7 +15,7 @@ setup(
     description='SendGrid Backend for Django',
     long_description=open('./README.rst').read(),
     install_requires=[
-        "python_http_client >= 2.1.*, <2.3",
+        "python_http_client >= 2.1, <2.3",
         "sendgrid >= 3.5, <4",
     ],
     classifiers=[
